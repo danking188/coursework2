@@ -1,5 +1,8 @@
 import java.util.ArrayList;
 import java.util.List;
+import java.io.*;
+import java.nio.file.*;
+import java.nio.charset.StandardCharsets;
 
 
 
@@ -27,6 +30,9 @@ import java.util.List;
 
 
     private static int getCardValue(String card) {
+        if (card == null || card.length() < 2 || card.length() > 3 || "CDHS".indexOf(card.charAt(card.length() - 1)) < 0) {
+            throw new IllegalArgumentException("Invalid card: " + card + " (expected AC, 10D, QH, KS, etc.)");
+        }
         String valueStr = card.substring(0, card.length() - 1);
         if (valueStr.equals("A")) {
             return 1;
@@ -37,29 +43,41 @@ import java.util.List;
         } else if (valueStr.equals("K")) {
             return 13;
         } else {
+            if (!(valueStr.equals("10") || (valueStr.length() == 1 && valueStr.charAt(0) >= '2' && valueStr.charAt(0) <= '9'))) {
+                throw new IllegalArgumentException("Invalid card rank: " + card);
+            }
             return Integer.parseInt(valueStr);
         }
     }
 
 
     public static ArrayList<String> bubbleSort(ArrayList<String> list) {
+        for (String card : list) getCardValue(card);
         int n = list.size();
         for (int i = 0; i < n - 1; i++) {
+            boolean swapped = false;
             for (int j = 0; j < n - i - 1; j++) {
                 if (cardCompare(list.get(j), list.get(j + 1)) > 0) {
 
                     String temp = list.get(j);
                     list.set(j, list.get(j + 1));
                     list.set(j + 1, temp);
+                    swapped = true;
 
                 }
             }
+            if (!swapped) break;
         }
         return list;
     }
 
 
     public static ArrayList<String> mergeSort(ArrayList<String> list) {
+        for (String card : list) getCardValue(card);
+        return mergeSortValidated(list);
+    }
+
+    private static ArrayList<String> mergeSortValidated(ArrayList<String> list) {
         if (list.size() <= 1) {
             return list;
         }
@@ -68,8 +86,8 @@ import java.util.List;
         ArrayList<String> leftList = new ArrayList<>(list.subList(0, mid));
         ArrayList<String> rightList = new ArrayList<>(list.subList(mid, list.size()));
 
-        leftList = mergeSort(leftList);
-        rightList = mergeSort(rightList);
+        leftList = mergeSortValidated(leftList);
+        rightList = mergeSortValidated(rightList);
 
         return merge(leftList, rightList);
     }
@@ -104,65 +122,75 @@ import java.util.List;
         return mergedList;
     }
 
-    public static long measureBubbleSort(String filename) {
+    private static ArrayList<String> readCards(String filename) {
         ArrayList<String> cardList = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new FileReader(filename))) {
+        try (BufferedReader reader = Files.newBufferedReader(Path.of(filename), StandardCharsets.UTF_8)) {
             String line;
-            while ((line = reader.readLine())!= null) {
-                cardList.add(line.trim());
+            int lineNumber = 0;
+            while ((line = reader.readLine()) != null) {
+                lineNumber++;
+                String card = line.trim();
+                if (card.isEmpty()) continue;
+                try { getCardValue(card); }
+                catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException(filename + ":" + lineNumber + ": " + e.getMessage(), e);
+                }
+                cardList.add(card);
             }
         } catch (IOException e) {
-            e.printStackTrace();
-            return -1;
+            throw new UncheckedIOException("Cannot read cards: " + filename, e);
         }
+        return cardList;
+    }
 
-        long startTime = System.currentTimeMillis();
+    public static long measureBubbleSort(String filename) {
+        ArrayList<String> cardList = readCards(filename);
+        long startTime = System.nanoTime();
         bubbleSort(cardList);
-        long endTime = System.currentTimeMillis();
-
-        return endTime - startTime;
+        return (System.nanoTime() - startTime) / 1_000_000;
     }
 
     public static long measureMergeSort(String filename) {
-        ArrayList<String> cardList = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new FileReader(filename))) {
-            String line;
-            while ((line = reader.readLine())!= null) {
-                cardList.add(line.trim());
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-            return -1;
-        }
-
-        long startTime = System.currentTimeMillis();
+        ArrayList<String> cardList = readCards(filename);
+        long startTime = System.nanoTime();
         mergeSort(cardList);
-        long endTime = System.currentTimeMillis();
-
-        return endTime - startTime;
+        return (System.nanoTime() - startTime) / 1_000_000;
     }
     void sortComparison(String[] filenames) throws IOException {
-        BufferedWriter writer = new BufferedWriter(new FileWriter("sortComparison.csv"));
+        sortComparison(filenames, "sortComparison.csv");
+    }
 
-        writer.write(" , ");
-        for (String fileName1 : filenames) {
-            writer.write(fileName1.replace(".txt", "").replace("sort", "") + ", ");
+    void sortComparison(String[] filenames, String output) throws IOException {
+        if (filenames == null || filenames.length == 0) throw new IllegalArgumentException("At least one input file is required");
+        var header = new StringBuilder("algorithm_ms");
+        var bubble = new StringBuilder("bubbleSort");
+        var merge = new StringBuilder("mergeSort");
+        Path outputPath = Path.of(output).toAbsolutePath().normalize();
+        for (String filename : filenames) {
+            Path inputPath = Path.of(filename).toAbsolutePath().normalize();
+            if (inputPath.equals(outputPath) || (Files.exists(inputPath) && Files.exists(outputPath) && Files.isSameFile(inputPath, outputPath))) {
+                throw new IllegalArgumentException("Output must not overwrite input: " + filename);
+            }
+            // Read once; independent copies give both algorithms the same input order.
+            var cards = readCards(filename);
+            var bubbleInput = new ArrayList<>(cards);
+            var mergeInput = new ArrayList<>(cards);
+            long start = System.nanoTime();
+            bubbleSort(bubbleInput);
+            double bubbleMs = (System.nanoTime() - start) / 1_000_000.0;
+            start = System.nanoTime();
+            mergeSort(mergeInput);
+            double mergeMs = (System.nanoTime() - start) / 1_000_000.0;
+            header.append(",\"").append(filename.replace("\"", "\"\"")).append("\"");
+            bubble.append(',').append(bubbleMs);
+            merge.append(',').append(mergeMs);
         }
-        writer.newLine();
-
-        writer.write("bubbleSort, ");
-        for (String fileName2 : filenames) {
-            writer.write(measureBubbleSort(fileName2) + ", ");
+        // Do not create/truncate the report until all input files are valid.
+        try (BufferedWriter writer = Files.newBufferedWriter(outputPath, StandardCharsets.UTF_8)) {
+            writer.write(header.toString()); writer.newLine();
+            writer.write(bubble.toString()); writer.newLine();
+            writer.write(merge.toString()); writer.newLine();
         }
-        writer.newLine();
-
-        writer.write("mergeSort, ");
-        for (String fileName3 : filenames) {
-            writer.write(measureMergeSort(fileName3) + ", ");
-        }
-        writer.newLine();
-
-        writer.close();
     }
 
 
